@@ -1,45 +1,80 @@
-from pydrive.auth import GoogleAuth
-from pydrive.drive import GoogleDrive
 import streamlit as st
 import cv2
 import uuid
 import os
-import zipfile
+import time
+import tempfile
+import json
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
-# Setup folder
-IMAGES_PATH = 'collected_images'
-ZIP_NAME = 'photos.zip'
-os.makedirs(IMAGES_PATH, exist_ok=True)
+# --- SET YOUR GOOGLE DRIVE FOLDER ID ---
+DRIVE_FOLDER_ID = "1DSIzYoZ8oTMrj35656bRCXRyqqQWeukU"  # Replace with your folder ID
 
-st.title("📸 Face Photo Collector")
-st.write("Click 'Take Photo' to capture from webcam. Then 'Upload to Drive'.")
+# --- Google Drive service using service account ---
+@st.cache_resource
+def get_drive_service():
+    service_account_info = json.loads(st.secrets["google_service_account"]["json"])
+    credentials = service_account.Credentials.from_service_account_info(
+        service_account_info,
+        scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    return build('drive', 'v3', credentials=credentials)
 
-# Interactive login
-gauth = GoogleAuth()
-gauth.LocalWebserverAuth()  # Opens a browser for user to log in
-drive = GoogleDrive(gauth)
+def upload_file_to_drive(file_path, folder_id):
+    service = get_drive_service()
+    file_metadata = {
+        'name': os.path.basename(file_path),
+        'parents': [folder_id]
+    }
+    media = MediaFileUpload(file_path, resumable=True)
+    file = service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields='id'
+    ).execute()
+    return file.get('id')
 
-# Take photo
-if st.button("📷 Take Photo"):
+# --- Streamlit UI ---
+st.title("📸 Face Dataset Collector")
+st.write("Capture multiple photos in a streak for training data.")
+
+num_images = st.number_input("How many photos to capture?", min_value=1, max_value=50, value=10, step=1)
+capture_btn = st.button("Capture Multiple Photos")
+upload_btn = st.button("Upload to Google Drive")
+
+# Store image paths
+if "images" not in st.session_state:
+    st.session_state.images = []
+
+# --- Capture Multiple Photos ---
+if capture_btn:
+    st.session_state.images.clear()
     cap = cv2.VideoCapture(0)
-    ret, frame = cap.read()
-    cap.release()
-    if ret:
+    st.info("Capturing photos...")
+    for i in range(num_images):
+        ret, frame = cap.read()
+        if not ret:
+            st.error("Failed to read from camera.")
+            break
         filename = f"{uuid.uuid4()}.jpg"
-        filepath = os.path.join(IMAGES_PATH, filename)
+        filepath = os.path.join(tempfile.gettempdir(), filename)
         cv2.imwrite(filepath, frame)
-        st.image(frame, caption="Captured Image", channels="BGR")
-        st.success(f"Saved {filename}")
-    else:
-        st.error("Failed to capture image.")
+        st.session_state.images.append(filepath)
+        st.image(frame, caption=f"Photo {i+1}", channels="BGR", width=150)
+        time.sleep(0.3)  # small delay between shots
+    cap.release()
+    st.success(f"Captured {len(st.session_state.images)} photos.")
 
-# Upload
-if st.button("☁️ Upload to Google Drive"):
-    images = os.listdir(IMAGES_PATH)
-    with zipfile.ZipFile(ZIP_NAME, 'w') as zipf:
-        for img in images:
-            zipf.write(os.path.join(IMAGES_PATH, img), img)
-    file_drive = drive.CreateFile({'title': ZIP_NAME})
-    file_drive.SetContentFile(ZIP_NAME)
-    file_drive.Upload()
-    st.success("✅ Uploaded to your Google Drive!")
+# --- Upload to Drive ---
+if upload_btn:
+    if not st.session_state.images:
+        st.warning("No photos to upload.")
+    else:
+        for path in st.session_state.images:
+            try:
+                file_id = upload_file_to_drive(path, DRIVE_FOLDER_ID)
+                st.success(f"Uploaded: {os.path.basename(path)} (ID: {file_id})")
+            except Exception as e:
+                st.error(f"Failed to upload {path}: {e}")
