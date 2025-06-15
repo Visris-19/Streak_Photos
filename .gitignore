@@ -1,0 +1,16 @@
+# Credentials
+mycreds.txt
+.env
+client_secrets.json
+*.credentials
+token.pickle
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+
+# IDE
+.vscode/
+.idea/
